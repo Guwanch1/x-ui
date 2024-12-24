@@ -1002,6 +1002,7 @@
                     id: dbInboundId,
                     settings: '{"clients": [' + clients.toString() + ']}',
                 };
+                console.log(data);
                 await this.submit(`/xui/inbound/addClient`, data, modal);
             },
             async updateClient(client, dbInboundId, clientId) {
