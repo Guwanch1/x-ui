@@ -3,6 +3,8 @@ import bodyParser from 'body-parser';
 import axios from 'axios';
 import QueryString from 'qs';
 import dotenv from 'dotenv';
+import QRCode from 'qrcode';
+import crypto from 'crypto';
 
 const seq = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
 
@@ -41,9 +43,8 @@ class RandomUtil {
     }
 
     static randomShadowsocksPassword() {
-        let array = new Uint8Array(32);
-        window.crypto.getRandomValues(array);
-        return btoa(String.fromCharCode.apply(null, array));
+        const array = crypto.randomBytes(32); 
+        return Buffer.from(array).toString('base64');
     }
 
     static randomShortId() {
@@ -57,7 +58,6 @@ class RandomUtil {
         return shortIds;
     }
 }
-
 
 dotenv.config();
 
@@ -80,23 +80,64 @@ let config = {
     url: baseUrl,
     headers: { 
         'Content-Type': 'application/x-www-form-urlencoded', 
-        'Authorization': process.env.BEARER, 
+        // 'Authorization': process.env.BEARER, 
         'Cookie': process.env.COOKIE
     }
 };
 
 
-app.get('/', async (req, res) => {
-    // Get data from API
-    config.data = credentials;
-    config.url = baseUrl + 'list';
-    axios.request(config).then((response) => {
-        res.render('index.ejs', { data: response.data });
-    }).catch((error) => {
-        console.log(error);
-        res.end('error');
-    });
+async function getInbounds() {
 
+    try {
+        config.data = credentials;
+        config.url = baseUrl + 'list';
+
+        let response = await axios.request(config);
+        return response.data;
+
+    } catch (error) {
+        console.error(error);
+    }
+
+
+}
+
+function generateVLESSClientCode({ uuid, address, port, security = "none", type = "tcp", pbk = "", fp = "chrome", 
+    flow = "", sni = "", remarks = "VLESS_Client"
+}) {
+
+    const params = new URLSearchParams();
+
+    params.append("type", type);
+    params.append("security", security);
+    params.append("pbk", pbk);
+    params.append("fp", fp);
+
+    if (flow) params.append("flow", flow);
+    if (sni) params.append("sni", sni);
+
+    // Construct the VLESS URI
+    const uri = `vless://${uuid}@${address}:${port}?${params.toString()}#${encodeURIComponent(remarks)}`;
+    return uri;
+}
+
+function generateShadowsocksClientCode(method, password, clientPassword, server, port, remark = "Shadowsocks_Client") {
+    const methodPassword = `${method}:${password}:${clientPassword}`;
+    const encodedMethodPassword = Buffer.from(methodPassword).toString('base64');
+    return `ss://${encodedMethodPassword}@${server}:${port}#${remark}`;
+}
+
+const generatorQR = async text => {
+    try {
+        let res = await QRCode.toDataURL(text);
+        return res;
+    } catch (err) {
+        console.error(err);
+    }
+}
+
+app.get('/', async (req, res) => {
+    res.render('index.ejs', { data:  await getInbounds() });
 });
 
 app.post('/generate', async (req, res) => {
@@ -105,44 +146,85 @@ app.post('/generate', async (req, res) => {
 
     let id = rdata.inboundId.split('?')[0];
     let protocol = rdata.inboundId.split('?')[1];
+
+
+    config.url = baseUrl + 'addClient';
    
     if(protocol == 'vless') {
 
-        config.url = baseUrl + 'addClient';
+        let clients = [
+            {
+                id: RandomUtil.randomUUID(),
+                flow: 'xtls-rprx-vision',
+                email: RandomUtil.randomLowerAndNum(9),
+                totalGB: 0,
+                expiryTime: 0,
+                enable: true,
+                tgId: rdata.tgId,
+                subId: RandomUtil.randomLowerAndNum(16),
+                reset: 0 
+            }
+        ];
     
         config.data = qs.stringify({
             username: process.env.USERNAME,
             password: process.env.PASSWORD,
             id: id,
             settings: JSON.stringify({
-                clients: [
-                    {
-                        id: RandomUtil.randomUUID(),
-                        flow: 'xtls-rprx-vision',
-                        email: RandomUtil.randomLowerAndNum(9),
-                        totalGB: 0,
-                        expiryTime: 0,
-                        enable: true,
-                        tgId: rdata.tgId,
-                        subId: RandomUtil.randomLowerAndNum(16),
-                        reset: 0 
-                    }
-                ]
+                clients: clients
             })
         });
 
         axios.request(config).then((response) => {
-            console.log(response.data);
             if(response.data.success) {
-                res.end('Success');
+                res.redirect('/code/vless/' + clients[0].email);
             } else {
-                console.log(response.data.msg);
+                console.error(response.data.msg);
                 res.end('Failed');
             }
         }).catch((error) => {
-            console.log(error);
+            console.error(error);
         });
 
+
+
+
+    }else if(protocol == 'shadowsocks') {
+        
+        let clients = {
+            "clients": [
+              {
+                "method": "",
+                "password": RandomUtil.randomShadowsocksPassword(),
+                "email": RandomUtil.randomLowerAndNum(9),
+                "totalGB": 0,
+                "expiryTime": 0,
+                "enable": true,
+                "tgId": rdata.tgId,
+                "subId": RandomUtil.randomLowerAndNum(16),
+                "reset": 0
+              }
+            ]
+        };
+
+        config.data = qs.stringify({
+            username: process.env.USERNAME,
+            password: process.env.PASSWORD,
+            id: id,
+            settings: JSON.stringify(clients)
+        });
+
+        axios.request(config).then((response) => {
+            if(response.data.success) {
+                res.redirect('/code/shadowsocks/'  + clients.clients[0].email);
+            } else {
+                console.error(response.data);
+                res.end('Failed');
+            }
+        }).catch((error) => {
+            console.error(error);
+        });
+        
     }else {
         res.end('We are working on it');
     }
@@ -151,9 +233,50 @@ app.post('/generate', async (req, res) => {
 
 });
 
-app.get('/code', (req, res) => {
-    
+app.get('/code/:protocol/:email', async (req, res) => {
+    let email = req.params.email;
+    let inbounds = await getInbounds();
+    if(req.params.protocol == 'vless') {
+        inbounds.obj.forEach(async inbound => {
+            let inboundSettings = JSON.parse(inbound.settings);
+            inboundSettings.clients.forEach(async client => {
+                if(client.email == email) {
+                    let streamSettings = JSON.parse(inbound.streamSettings);
+                    let link = generateVLESSClientCode({
+                        uuid: client.id,
+                        address: process.env.HOST,
+                        port: inbound.port,
+                        type: streamSettings.network,
+                        security: streamSettings.security,
+                        pbk: streamSettings.realitySettings.settings.publicKey,
+                        fp: streamSettings.realitySettings.settings.fingerprint,
+                        sni: streamSettings.realitySettings.serverNames[0],
+                        flow: client.flow,
+                        remarks: "libertatem"
+                    });
+                    let qr = await generatorQR(link);
+                    res.render('code.ejs', { link: link, qr: qr });
+                    return;
+                }
+            });
+
+        });
+    }else if(req.params.protocol == 'shadowsocks') {
+        inbounds.obj.forEach(async inbound => {
+            let inboundSettings = JSON.parse(inbound.settings);
+            inboundSettings.clients.forEach(async client => {
+                if(client.email == email) {
+                    let link = generateShadowsocksClientCode(inboundSettings.method, inboundSettings.password, client.password, process.env.HOST, inbound.port, 'socks');
+                    let qr = await generatorQR(link);
+                    res.render('code.ejs', { link: link, qr: qr });
+                    return;
+                }
+            });
+
+        });
+    }
 });
+
 
 app.get('/login', (req, res) => {
     res.render('login.ejs');
