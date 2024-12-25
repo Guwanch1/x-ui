@@ -58,7 +58,6 @@ class RandomUtil {
         return shortIds;
     }
 }
-
 dotenv.config();
 
 const app = express();
@@ -67,21 +66,23 @@ const qs = QueryString;
 const basePort = process.env.PORT;
 const secretURL = process.env.SECRET;
 const host = process.env.HOST;
-const baseUrl = `http://${process.env.HOST}:${process.env.PORT}/${process.env.SECRET}/xui/inbound/`;
+let baseUrl = `http://${host}:${basePort}/${secretURL}/xui/inbound/`;
+
+if (secretURL == '') {
+    baseUrl = `http://${host}:${basePort}/xui/inbound/`;
+}
 
 app.use(express.static('public'));
 app.use(bodyParser.urlencoded({ extended: true }));
 
-
-let credentials = qs.stringify({
+const credentials = qs.stringify({
     'username': process.env.USERNAME,
     'password': process.env.PASSWORD
 });
 
-let config = {
+const config = {
     method: 'post',
     maxBodyLength: Infinity,
-    url: baseUrl,
     headers: { 
         'Content-Type': 'application/x-www-form-urlencoded'
     },
@@ -91,6 +92,9 @@ let config = {
 async function xuiLogin() {
     try {
         config.url = `http://${host}:${basePort}/${secretURL}/login`;
+        if (secretURL == '') {
+            config.url = `http://${host}:${basePort}/login`;
+        }
         config.data = credentials;
         const response = await axios.request(config);
         const setCookieHeader = response.headers['set-cookie'];
@@ -106,198 +110,128 @@ async function xuiLogin() {
 
 await xuiLogin();
 
-
-
-async function getInbounds() {
-
-    try {
-        config.data = credentials;
-        config.url = baseUrl + 'list/';
-        let response = await axios.request(config);
-        return response.data;
-
-    } catch (error) {
-        console.error(error);
-    }
-
-
-}
-
-function generateVLESSClientCode({ uuid, address, port, security = "none", type = "tcp", pbk = "", fp = "chrome", 
-    flow = "", sni = "", remarks = "VLESS_Client"
-}) {
-
-    const params = new URLSearchParams();
-
-    params.append("type", type);
-    params.append("security", security);
-    params.append("pbk", pbk);
-    params.append("fp", fp);
-
-    if (flow) params.append("flow", flow);
-    if (sni) params.append("sni", sni);
-
-    // Construct the VLESS URI
-    const uri = `vless://${uuid}@${address}:${port}?${params.toString()}#${encodeURIComponent(remarks)}`;
-    return uri;
-}
-
-function generateShadowsocksClientCode(method, password, clientPassword, server, port, remark = "Shadowsocks_Client") {
-    const methodPassword = `${method}:${password}:${clientPassword}`;
-    const encodedMethodPassword = Buffer.from(methodPassword).toString('base64');
-    return `ss://${encodedMethodPassword}@${server}:${port}#${remark}`;
-}
-
 const generatorQR = async text => {
     try {
-        let res = await QRCode.toDataURL(text);
-        return res;
+        return await QRCode.toDataURL(text);
     } catch (err) {
         console.error(err);
     }
 }
 
+async function getInbounds() {
+    try {
+        config.data = credentials;
+        config.url = baseUrl + 'list/';
+        const response = await axios.request(config);
+        return response.data;
+    } catch (error) {
+        console.error(error);
+    }
+}
+
+
+
+function generateClientCode(protocol, client, inbound) {
+    const remark = "libertatem";
+    if (protocol === 'vless') {
+        const streamSettings = JSON.parse(inbound.streamSettings);
+        const realitySettings = streamSettings.realitySettings.settings;
+
+        const params = new URLSearchParams({
+            type: streamSettings.network,
+            security: streamSettings.security,
+            pbk: realitySettings.publicKey,
+            fp: realitySettings.fingerprint
+        });
+
+        if (client.flow) params.append("flow", client.flow);
+        if (streamSettings.realitySettings.serverNames[0]) params.append("sni", streamSettings.realitySettings.serverNames[0]);
+
+        const uri = `vless://${client.id}@${host}:${inbound.port}?${params.toString()}#${encodeURIComponent(remark)}`;
+        return uri;
+
+    } else if (protocol === 'shadowsocks') {
+        const inboundSettings = JSON.parse(inbound.settings);
+        const methodPassword = `${inboundSettings.method}:${inboundSettings.password}:${client.password}`;
+        const encodedMethodPassword = Buffer.from(methodPassword).toString('base64');
+        return `ss://${encodedMethodPassword}@${host}:${inbound.port}#${encodeURIComponent(remark)}`;
+    }
+}
+
 app.get('/', async (req, res) => {
-    res.render('index.ejs', { data:  await getInbounds() });
+    res.render('index.ejs', { data: await getInbounds() });
 });
 
 app.post('/generate', async (req, res) => {
-
-    let rdata = req.body;
-
-    let id = rdata.inboundId.split('?')[0];
-    let protocol = rdata.inboundId.split('?')[1];
-
+    const { inboundId, tgId } = req.body;
+    const [id, protocol] = inboundId.split('?');
 
     config.url = baseUrl + 'addClient';
-   
-    if(protocol == 'vless') {
 
-        let clients = [
-            {
-                id: RandomUtil.randomUUID(),
-                flow: 'xtls-rprx-vision',
-                email: RandomUtil.randomLowerAndNum(9),
-                totalGB: 0,
-                expiryTime: 0,
-                enable: true,
-                tgId: rdata.tgId,
-                subId: RandomUtil.randomLowerAndNum(16),
-                reset: 0 
-            }
-        ];
-    
-        config.data = qs.stringify({
-            username: process.env.USERNAME,
-            password: process.env.PASSWORD,
-            id: id,
-            settings: JSON.stringify({
-                clients: clients
-            })
-        });
-
-        axios.request(config).then((response) => {
-            if(response.data.success) {
-                res.redirect('/code/vless/' + clients[0].email);
-            } else {
-                console.error(response.data.msg);
-                res.end('Failed');
-            }
-        }).catch((error) => {
-            console.error(error);
-        });
-
-
-
-
-    }else if(protocol == 'shadowsocks') {
-        
-        let clients = {
-            "clients": [
-              {
-                "method": "",
-                "password": RandomUtil.randomShadowsocksPassword(),
-                "email": RandomUtil.randomLowerAndNum(9),
-                "totalGB": 0,
-                "expiryTime": 0,
-                "enable": true,
-                "tgId": rdata.tgId,
-                "subId": RandomUtil.randomLowerAndNum(16),
-                "reset": 0
-              }
-            ]
-        };
-
-        config.data = qs.stringify({
-            username: process.env.USERNAME,
-            password: process.env.PASSWORD,
-            id: id,
-            settings: JSON.stringify(clients)
-        });
-
-        axios.request(config).then((response) => {
-            if(response.data.success) {
-                res.redirect('/code/shadowsocks/'  + clients.clients[0].email);
-            } else {
-                console.error(response.data);
-                res.end('Failed');
-            }
-        }).catch((error) => {
-            console.error(error);
-        });
-        
-    }else {
-        res.end('We are working on it');
+    let clients;
+    if (protocol === 'vless') {
+        clients = [{
+            id: RandomUtil.randomUUID(),
+            flow: 'xtls-rprx-vision',
+            email: RandomUtil.randomLowerAndNum(9),
+            totalGB: 0,
+            expiryTime: 0,
+            enable: true,
+            tgId,
+            subId: RandomUtil.randomLowerAndNum(16),
+            reset: 0
+        }];
+    } else if (protocol === 'shadowsocks') {
+        clients = [{
+            method: "",
+            password: RandomUtil.randomShadowsocksPassword(),
+            email: RandomUtil.randomLowerAndNum(9),
+            totalGB: 0,
+            expiryTime: 0,
+            enable: true,
+            tgId,
+            subId: RandomUtil.randomLowerAndNum(16),
+            reset: 0
+        }];
+    } else {
+        return res.end('We are working on it');
     }
-    
 
+    config.data = qs.stringify({
+        username: process.env.USERNAME,
+        password: process.env.PASSWORD,
+        id,
+        settings: JSON.stringify({ clients })
+    });
 
+    try {
+        const response = await axios.request(config);
+        if (response.data.success) {
+            res.redirect('/code/' + protocol + '/' + clients[0].email);
+        } else {
+            console.error(response.data);
+            res.end('Failed');
+        }
+    } catch (error) {
+        console.error(error);
+    }
 });
 
 app.get('/code/:protocol/:email', async (req, res) => {
-    let email = req.params.email;
-    let inbounds = await getInbounds();
-    if(req.params.protocol == 'vless') {
-        inbounds.obj.forEach(async inbound => {
-            let inboundSettings = JSON.parse(inbound.settings);
-            inboundSettings.clients.forEach(async client => {
-                if(client.email == email) {
-                    let streamSettings = JSON.parse(inbound.streamSettings);
-                    let link = generateVLESSClientCode({
-                        uuid: client.id,
-                        address: process.env.HOST,
-                        port: inbound.port,
-                        type: streamSettings.network,
-                        security: streamSettings.security,
-                        pbk: streamSettings.realitySettings.settings.publicKey,
-                        fp: streamSettings.realitySettings.settings.fingerprint,
-                        sni: streamSettings.realitySettings.serverNames[0],
-                        flow: client.flow,
-                        remarks: "libertatem"
-                    });
-                    let qr = await generatorQR(link);
-                    res.render('code.ejs', { link: link, qr: qr });
-                    return;
-                }
-            });
-
-        });
-    }else if(req.params.protocol == 'shadowsocks') {
-        inbounds.obj.forEach(async inbound => {
-            let inboundSettings = JSON.parse(inbound.settings);
-            inboundSettings.clients.forEach(async client => {
-                if(client.email == email) {
-                    let link = generateShadowsocksClientCode(inboundSettings.method, inboundSettings.password, client.password, process.env.HOST, inbound.port, 'socks');
-                    let qr = await generatorQR(link);
-                    res.render('code.ejs', { link: link, qr: qr });
-                    return;
-                }
-            });
-
-        });
+    const { protocol, email } = req.params;
+    const inbounds = await getInbounds();
+    for (const inbound of inbounds.obj) {
+        if (inbound.protocol !== protocol) continue;
+        const inboundSettings = JSON.parse(inbound.settings);
+        for (const client of inboundSettings.clients) {
+            if (client.email === email) {
+                const link = generateClientCode(protocol, client, inbound);
+                const qr = await generatorQR(link);
+                return res.render('code.ejs', { link, qr });
+            }
+        }
     }
 });
-
 
 app.get('/login', (req, res) => {
     res.render('login.ejs');
