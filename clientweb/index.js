@@ -64,7 +64,11 @@ dotenv.config();
 const app = express();
 const port = 3000;
 const qs = QueryString;
-const baseUrl = process.env.BASE_URL;
+const basePort = process.env.PORT;
+const secretURL = process.env.SECRET;
+const host = process.env.HOST;
+const baseUrl = `http://${process.env.HOST}:${process.env.PORT}/${process.env.SECRET}/xui/inbound/`;
+
 app.use(express.static('public'));
 app.use(bodyParser.urlencoded({ extended: true }));
 
@@ -79,19 +83,36 @@ let config = {
     maxBodyLength: Infinity,
     url: baseUrl,
     headers: { 
-        'Content-Type': 'application/x-www-form-urlencoded', 
-        // 'Authorization': process.env.BEARER, 
-        'Cookie': process.env.COOKIE
-    }
+        'Content-Type': 'application/x-www-form-urlencoded'
+    },
+    withCredentials: true
 };
+
+async function xuiLogin() {
+    try {
+        config.url = `http://${host}:${basePort}/${secretURL}/login`;
+        config.data = credentials;
+        const response = await axios.request(config);
+        const setCookieHeader = response.headers['set-cookie'];
+        if (setCookieHeader) {
+            config.headers['Cookie'] = setCookieHeader;
+        } else {
+            console.log('No cookies received in the response.');
+        }
+    } catch (error) {
+        console.error('Error logging in:', error.message);
+    }
+}
+
+await xuiLogin();
+
 
 
 async function getInbounds() {
 
     try {
         config.data = credentials;
-        config.url = baseUrl + 'list';
-
+        config.url = baseUrl + 'list/';
         let response = await axios.request(config);
         return response.data;
 
